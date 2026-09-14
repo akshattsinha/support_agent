@@ -912,8 +912,9 @@ with t4:
     )
 
     st.caption(
-        "Investigate difficult cases using the ticket, AI assessment, "
-        "knowledge base, validated learning examples, and audit history."
+        "Use the AI investigator to analyze difficult cases "
+        "and ask questions using the ticket, knowledge base, "
+        "and validated learning examples."
     )
 
     selected = st.selectbox(
@@ -923,126 +924,33 @@ with t4:
     )
 
     try:
+
         detail_response = requests.get(
             f"{API}/tickets/{selected}",
             timeout=10,
         )
+
         detail_response.raise_for_status()
+
         detail = detail_response.json()
+
     except Exception as exc:
+
         st.error(
             f"Could not load ticket: {exc}"
         )
+
         st.stop()
 
     ticket = detail["ticket"]
-    analysis = detail.get("analysis")
 
-    # --------------------------------------------------------
-    # CASE OVERVIEW
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.markdown(
-        "### 📋 Case Overview"
-    )
+    analysis = detail["analysis"]
 
     left, right = st.columns(2)
 
-    with left:
-
-        st.markdown(
-            f"#### {ticket['ticket_id']} — "
-            f"{ticket['subject']}"
-        )
-
-        st.write(
-            f"**Customer:** {ticket['customer_name']}"
-        )
-
-        st.write(
-            f"**Status:** `{ticket['status']}`"
-        )
-
-        st.write(
-            f"**Team:** `{ticket['team']}`"
-        )
-
-        st.markdown(
-            "#### Original Customer Issue"
-        )
-
-        st.info(
-            ticket["message"]
-        )
-
-    with right:
-
-        st.markdown(
-            "#### 🤖 AI Assessment"
-        )
-
-        if analysis:
-
-            st.write(
-                f"**Category:** {analysis.get('category', 'Unknown')}"
-            )
-
-            st.write(
-                f"**Severity:** `{analysis.get('severity', 'UNKNOWN')}`"
-            )
-
-            st.write(
-                f"**Sentiment:** {analysis.get('sentiment', 'Unknown')}"
-            )
-
-            try:
-                analysis_confidence = float(
-                    analysis.get("confidence", 0)
-                )
-            except (TypeError, ValueError):
-                analysis_confidence = 0.0
-
-            st.write(
-                f"**Confidence:** {analysis_confidence:.0%}"
-            )
-
-            escalate_text = (
-                "🚨 YES"
-                if bool(analysis.get("escalate", False))
-                else "✅ NO"
-            )
-
-            st.write(
-                f"**Escalate:** {escalate_text}"
-            )
-
-            st.write(
-                "**Why:**",
-                analysis.get(
-                    "escalation_reason",
-                    "No escalation reason available.",
-                ),
-            )
-
-            st.write(
-                "**Recommended:**",
-                analysis.get(
-                    "recommended_action",
-                    "No recommendation available.",
-                ),
-            )
-
-        else:
-
-            st.warning(
-                "No AI analysis available for this ticket."
-            )
-
-    # --------------------------------------------------------
-    # AI CUSTOMER RESPONSE
-    # --------------------------------------------------------
+    # ============================================================
+# AI CUSTOMER REPLY
+    # ============================================================
 
     st.divider()
 
@@ -1050,13 +958,7 @@ with t4:
         "### 💬 AI Customer Response"
     )
 
-    if not analysis:
-
-        st.info(
-            "Run AI analysis before generating a customer response."
-        )
-
-    else:
+    if analysis:
 
         ai_resolvable = bool(
             analysis.get(
@@ -1072,23 +974,6 @@ with t4:
             )
         )
 
-        severity = str(
-            analysis.get(
-                "severity",
-                "HIGH",
-            )
-        ).upper()
-
-        try:
-            confidence = float(
-                analysis.get(
-                    "confidence",
-                    0.0,
-                )
-            )
-        except (TypeError, ValueError):
-            confidence = 0.0
-
         if escalate:
 
             st.warning(
@@ -1099,28 +984,15 @@ with t4:
         elif not ai_resolvable:
 
             st.warning(
-                "⚠️ AI could not safely resolve this ticket "
-                "from the available knowledge."
-            )
-
-        elif severity in {"HIGH", "CRITICAL"}:
-
-            st.warning(
-                "⚠️ High-impact tickets require human review "
-                "before an automatic response."
-            )
-
-        elif confidence < 0.75:
-
-            st.warning(
-                "⚠️ AI confidence is below the automatic reply threshold."
+                "⚠️ AI could not safely resolve this "
+                "ticket from the available knowledge."
             )
 
         else:
 
             st.caption(
-                "Generate a customer-facing response grounded "
-                "in the support knowledge base."
+                "Generate a customer-facing response "
+                "grounded in the support knowledge base."
             )
 
             if st.button(
@@ -1143,7 +1015,9 @@ with t4:
 
                         if reply_response.ok:
 
-                            reply_result = reply_response.json()
+                            reply_result = (
+                                reply_response.json()
+                            )
 
                             if reply_result.get(
                                 "can_reply",
@@ -1161,21 +1035,22 @@ with t4:
                                 st.chat_message(
                                     "assistant"
                                 ).write(
-                                    reply_result.get(
-                                        "reply",
-                                        "",
-                                    )
+                                    reply_result[
+                                        "reply"
+                                    ]
                                 )
 
-                                sources = reply_result.get(
-                                    "sources",
-                                    [],
+                                sources = (
+                                    reply_result.get(
+                                        "sources",
+                                        [],
+                                    )
                                 )
 
                                 if sources:
 
                                     st.markdown(
-                                        "#### 📚 Knowledge Sources"
+                                        "#### Knowledge Sources"
                                     )
 
                                     for source in sources:
@@ -1184,19 +1059,9 @@ with t4:
                                             f"📚 `{source}`"
                                         )
 
-                                try:
-                                    reply_confidence = float(
-                                        reply_result.get(
-                                            "confidence",
-                                            0,
-                                        )
-                                    )
-                                except (TypeError, ValueError):
-                                    reply_confidence = 0.0
-
                                 st.caption(
                                     "Reply confidence: "
-                                    f"{reply_confidence:.0%}"
+                                    f"{reply_result.get('confidence', 0):.0%}"
                                 )
 
                             else:
@@ -1204,7 +1069,8 @@ with t4:
                                 st.warning(
                                     reply_result.get(
                                         "reason",
-                                        "AI could not safely generate a response.",
+                                        "AI could not safely "
+                                        "generate a response.",
                                     )
                                 )
 
@@ -1220,8 +1086,106 @@ with t4:
                             f"Reply generation failed: {exc}"
                         )
 
+    else:
+
+        st.info(
+            "Run AI analysis before generating "
+            "a customer response."
+        )
+
+        # --------------------------------------------------------
+    # TICKET
     # --------------------------------------------------------
-    # ASK AI INVESTIGATOR
+
+    with left:
+
+        st.markdown(
+            f"### {ticket['ticket_id']} — "
+            f"{ticket['subject']}"
+        )
+
+        st.write(
+            f"**Customer:** "
+            f"{ticket['customer_name']}"
+        )
+
+        st.write(
+            ticket["message"]
+        )
+
+        st.write(
+            f"**Status:** `{ticket['status']}`"
+        )
+
+        st.write(
+            f"**Team:** `{ticket['team']}`"
+        )
+
+    # --------------------------------------------------------
+    # AI ASSESSMENT
+    # --------------------------------------------------------
+
+    with right:
+
+        st.markdown(
+            "### AI Assessment"
+        )
+
+        if analysis:
+
+            st.write(
+                f"**Category:** "
+                f"{analysis['category']}"
+            )
+
+            st.write(
+                f"**Severity:** "
+                f"`{analysis['severity']}`"
+            )
+
+            st.write(
+                f"**Sentiment:** "
+                f"{analysis['sentiment']}"
+            )
+
+            st.write(
+                f"**Confidence:** "
+                f"{analysis['confidence']:.0%}"
+            )
+
+            escalate_text = (
+                "🚨 YES"
+                if analysis["escalate"]
+                else "✅ NO"
+            )
+
+            st.write(
+                f"**Escalate:** "
+                f"{escalate_text}"
+            )
+
+            st.write(
+                "**Why:**",
+                analysis[
+                    "escalation_reason"
+                ],
+            )
+
+            st.write(
+                "**Recommended:**",
+                analysis[
+                    "recommended_action"
+                ],
+            )
+
+        else:
+
+            st.info(
+                "No AI analysis available."
+            )
+
+    # --------------------------------------------------------
+    # ASK AI
     # --------------------------------------------------------
 
     st.divider()
@@ -1232,7 +1196,10 @@ with t4:
 
     question = st.text_input(
         "Ask a question about this case",
-        placeholder="Why was this ticket escalated?",
+        placeholder=(
+            "Why might this assessment "
+            "have been submitted?"
+        ),
         key="investigation_question",
     )
 
@@ -1240,7 +1207,7 @@ with t4:
         "Investigate",
         type="primary",
         key="investigate_button",
-    ) and question.strip():
+    ) and question:
 
         with st.spinner(
             "AI is investigating the case..."
@@ -1252,32 +1219,25 @@ with t4:
                     f"{API}/tickets/"
                     f"{selected}/investigate",
                     json={
-                        "question": question.strip()
+                        "question": question
                     },
                     timeout=180,
                 )
 
                 if investigation_response.ok:
 
-                    result = investigation_response.json()
+                    result = (
+                        investigation_response
+                        .json()
+                    )
 
                     st.success(
                         "Investigation completed."
                     )
 
-                    try:
-                        investigation_confidence = float(
-                            result.get(
-                                "confidence",
-                                0,
-                            )
-                        )
-                    except (TypeError, ValueError):
-                        investigation_confidence = 0.0
-
-                    st.metric(
-                        "Investigation Confidence",
-                        f"{investigation_confidence:.0%}",
+                    st.write(
+                        f"**Confidence:** "
+                        f"{result['confidence']:.0%}"
                     )
 
                     st.markdown(
@@ -1285,23 +1245,19 @@ with t4:
                     )
 
                     st.write(
-                        result.get(
-                            "findings",
-                            "No findings returned.",
-                        )
+                        result["findings"]
                     )
 
                     st.markdown(
                         "#### Evidence"
                     )
 
-                    evidence = result.get(
-                        "evidence",
-                        [],
+                    evidence = (
+                        result.get(
+                            "evidence",
+                            [],
+                        )
                     )
-
-                    if isinstance(evidence, str):
-                        evidence = [evidence]
 
                     if evidence:
 
@@ -1323,10 +1279,9 @@ with t4:
                     )
 
                     st.write(
-                        result.get(
-                            "recommendation",
-                            "No recommendation returned.",
-                        )
+                        result[
+                            "recommendation"
+                        ]
                     )
 
                 else:
@@ -1341,64 +1296,96 @@ with t4:
                     f"Investigation failed: {exc}"
                 )
 
+
+
+
     # --------------------------------------------------------
     # AUDIT TRAIL
     # --------------------------------------------------------
-
     st.divider()
 
-    st.markdown(
-        "### 🕒 Audit Trail"
-    )
-
+    st.subheader("🕒 Audit Trail")
     st.caption(
-        "Chronological history of AI decisions, knowledge retrieval, "
-        "investigations, human actions, and ticket lifecycle events."
+        "Operational history of AI decisions, human actions, "
+        "investigations, and ticket lifecycle events."
     )
 
-    audit_events = detail.get(
-        "audit",
-        [],
-    )
+    audit_events = detail.get("audit", [])
 
     if not audit_events:
-
-        st.info(
-            "No audit events available for this ticket."
-        )
-
+        st.info("No audit events available for this ticket.")
     else:
+        st.write(f"Showing **{len(audit_events):,}** audit event(s)")
 
-        st.write(
-            f"Showing **{len(audit_events):,}** audit event(s)"
-        )
+        def _format_audit_value(value):
+            """Render audit metadata as readable UI instead of raw JSON."""
+            if isinstance(value, bool):
+                return "Yes" if value else "No"
+            if value is None:
+                return "—"
+            if isinstance(value, float):
+                return f"{value:.2f}"
+            return str(value)
+
+        def _render_audit_metadata(metadata):
+            if not metadata:
+                return
+
+            if isinstance(metadata, dict):
+                for key, value in metadata.items():
+                    label = str(key).replace("_", " ").strip().title()
+
+                    if isinstance(value, list):
+                        st.markdown(f"**{label}**")
+                        for item in value:
+                            st.markdown(
+                                f"- {_format_audit_value(item)}"
+                            )
+                    elif isinstance(value, dict):
+                        st.markdown(f"**{label}**")
+                        for nested_key, nested_value in value.items():
+                            nested_label = (
+                                str(nested_key)
+                                .replace("_", " ")
+                                .strip()
+                                .title()
+                            )
+                            st.write(
+                                f"**{nested_label}:** "
+                                f"{_format_audit_value(nested_value)}"
+                            )
+                    else:
+                        st.write(
+                            f"**{label}:** "
+                            f"{_format_audit_value(value)}"
+                        )
+            elif isinstance(metadata, list):
+                for item in metadata:
+                    st.markdown(
+                        f"- {_format_audit_value(item)}"
+                    )
+            else:
+                st.write(_format_audit_value(metadata))
 
         for event in audit_events:
+            event_type = event.get("event_type", "UNKNOWN")
+            timestamp = event.get("timestamp", "")
+            actor = event.get("actor", "unknown")
+            description = event.get("description", "")
+            metadata = event.get("metadata")
 
             with st.expander(
-                f"{event.get('timestamp', '')} · "
-                f"{event.get('event_type', 'UNKNOWN')}"
+                f"{timestamp} · {event_type}",
+                expanded=False,
             ):
+                st.write(f"**Actor:** {actor}")
 
-                st.write(
-                    f"**Actor:** "
-                    f"{event.get('actor', 'unknown')}"
-                )
+                if description:
+                    st.write(description)
 
-                st.write(
-                    event.get(
-                        "description",
-                        "",
-                    )
-                )
-
-                if event.get("metadata"):
-
-                    st.json(
-                        event["metadata"]
-                    )
-
-
+                if metadata:
+                    st.markdown("**Event Details**")
+                    _render_audit_metadata(metadata)
 
 # ============================================================
 # CONTINUAL LEARNING
