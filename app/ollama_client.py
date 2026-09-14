@@ -4,63 +4,126 @@ import httpx
 from app.config import settings
 
 
-SYSTEM = """You are a conservative enterprise support triage agent.
+SYSTEM = """
+You are a conservative enterprise support triage agent.
+
 Never claim privileged actions happened.
-Escalate assessment, security, billing disputes, policy decisions,
-and uncertain cases.
+
+Never invent customer information,
+transactions, refunds, account changes,
+support policies, or system events.
+
+Use supplied knowledge as the source of truth.
+
+Escalate assessment, security, billing disputes,
+policy decisions, high-impact cases, and uncertain
+cases.
 """
 
 
+# ============================================================
+# GENERIC OLLAMA GENERATION
+# ============================================================
+
 def gen(prompt):
+
     payload = {
-        "model": settings.ollama_model,
-        "system": SYSTEM,
-        "prompt": prompt,
-        "stream": False,
-        "think": False,
-        "format": "json",
+        "model":
+            settings.ollama_model,
+
+        "system":
+            SYSTEM,
+
+        "prompt":
+            prompt,
+
+        "stream":
+            False,
+
+        "think":
+            False,
+
+        "format":
+            "json",
+
         "options": {
-            "temperature": 0.1
+            "temperature": 0.1,
         },
     }
 
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(
+        timeout=180
+    ) as client:
+
         response = client.post(
-            f"{settings.ollama_base_url.rstrip('/')}/api/generate",
+            (
+                f"{settings.ollama_base_url.rstrip('/')}"
+                "/api/generate"
+            ),
             json=payload,
         )
 
         response.raise_for_status()
 
         data = response.json()
-        raw = data.get("response", "")
+
+        raw = data.get(
+            "response",
+            "",
+        )
 
         if not raw:
-            raise RuntimeError("Ollama returned an empty response.")
+
+            raise RuntimeError(
+                "Ollama returned an empty response."
+            )
 
         try:
-            return json.loads(raw)
+
+            return json.loads(
+                raw
+            )
+
         except json.JSONDecodeError as exc:
+
             raise RuntimeError(
-                f"Ollama returned invalid JSON: {raw[:500]}"
+                "Ollama returned invalid JSON: "
+                f"{raw[:500]}"
             ) from exc
 
 
-def analyze_ticket(ticket, knowledge, learning=""):
-    return gen(
-        f"""Analyze this support ticket.
+# ============================================================
+# TICKET ANALYSIS
+# ============================================================
 
-Ticket ID: {ticket.ticket_id}
-Subject: {ticket.subject}
-Message: {ticket.message}
+def analyze_ticket(
+    ticket,
+    knowledge,
+    learning="",
+):
+
+    return gen(
+        f"""
+Analyze this support ticket.
+
+Ticket ID:
+{ticket.ticket_id}
+
+Subject:
+{ticket.subject}
+
+Message:
+{ticket.message}
 
 Knowledge Base:
 {knowledge}
 
-Validated human examples from previous reviewed cases:
+Validated human examples from previous
+reviewed cases:
 {learning}
 
 Return exactly these fields as JSON:
+
 category
 severity
 urgency
@@ -74,82 +137,151 @@ escalation_reason
 recommended_action
 
 Rules:
+
 - severity must be LOW, MEDIUM, HIGH, or CRITICAL.
 - confidence must be between 0 and 1.
 - Be conservative.
 - Do not invent facts.
-- Use validated human examples as decision guidance.
+- Billing disputes should generally be escalated.
+- Security concerns should generally be escalated.
+- Assessment problems with possible impact on
+  an active assessment should generally be escalated.
+- If the knowledge base does not safely answer
+  the customer's question, escalate.
+- Only set ai_resolvable=true when the issue can
+  be safely answered from the knowledge provided.
+- Do not claim that any action has already happened.
 """
     )
 
 
-def investigate_ticket(ticket, analysis, knowledge, question, learning=""):
+# ============================================================
+# AI INVESTIGATION
+# ============================================================
+
+def investigate_ticket(
+    ticket,
+    analysis,
+    knowledge,
+    question,
+    learning="",
+):
+
     result = gen(
-        f"""Investigate this support case.
+        f"""
+Investigate this support case.
 
 Ticket:
 {ticket.message}
 
 Existing AI analysis:
-{json.dumps(analysis)}
+{json.dumps(
+    analysis,
+    default=str,
+)}
 
 Knowledge Base:
 {knowledge}
 
-Validated human examples from previous reviewed cases:
+Validated human examples from previous
+reviewed cases:
 {learning}
 
 Question:
 {question}
 
-Return exactly these fields as JSON:
+Return exactly:
 
 {{
   "findings": "string",
-  "evidence": ["string", "string"],
+  "evidence": [
+    "string",
+    "string"
+  ],
   "recommendation": "string",
   "confidence": 0.0
 }}
 
 IMPORTANT:
+
 - evidence MUST be a JSON array of strings.
 - Never return evidence as a single string.
-- Do not invent logs, events, customer information, or facts.
-- Only include evidence that is actually supported by the ticket, existing analysis, or knowledge base.
-- Previous human examples are decision guidance only and are NOT evidence about this ticket.
-- confidence must be a number between 0 and 1.
+- Do not invent logs, events, customer information,
+  or facts.
+- Only include evidence actually supported by
+  the ticket, existing analysis, or knowledge base.
+- Previous human examples are decision guidance
+  only and are NOT evidence about this ticket.
+- confidence must be between 0 and 1.
 """
     )
 
-    # ---------------------------------------------------------
-    # Normalize Ollama output before Pydantic validation.
-    # ---------------------------------------------------------
-    evidence = result.get("evidence", [])
+    evidence = result.get(
+        "evidence",
+        [],
+    )
 
-    if isinstance(evidence, str):
-        evidence = [evidence]
+    if isinstance(
+        evidence,
+        str,
+    ):
+
+        evidence = [
+            evidence
+        ]
+
     elif evidence is None:
-        evidence = []
-    elif not isinstance(evidence, list):
-        evidence = [str(evidence)]
 
-    result["evidence"] = [str(item) for item in evidence]
+        evidence = []
+
+    elif not isinstance(
+        evidence,
+        list,
+    ):
+
+        evidence = [
+            str(evidence)
+        ]
+
+    result["evidence"] = [
+        str(item)
+        for item in evidence
+    ]
 
     result["findings"] = str(
-        result.get("findings", "")
+        result.get(
+            "findings",
+            "",
+        )
     )
 
     result["recommendation"] = str(
-        result.get("recommendation", "")
+        result.get(
+            "recommendation",
+            "",
+        )
     )
 
     try:
+
         result["confidence"] = float(
-            result.get("confidence", 0.0)
+            result.get(
+                "confidence",
+                0.0,
+            )
         )
-    except (TypeError, ValueError):
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         result["confidence"] = 0.0
 
     result["question"] = question
 
     return result
+
+
+# Backwards-compatible alias
+analyze_ticket = analyze_ticket

@@ -912,9 +912,8 @@ with t4:
     )
 
     st.caption(
-        "Use the AI investigator to analyze difficult cases "
-        "and ask questions using the ticket, knowledge base, "
-        "and validated learning examples."
+        "Investigate difficult cases using the ticket, AI assessment, "
+        "knowledge base, validated learning examples, and audit history."
     )
 
     selected = st.selectbox(
@@ -924,48 +923,42 @@ with t4:
     )
 
     try:
-
         detail_response = requests.get(
             f"{API}/tickets/{selected}",
             timeout=10,
         )
-
         detail_response.raise_for_status()
-
         detail = detail_response.json()
-
     except Exception as exc:
-
         st.error(
             f"Could not load ticket: {exc}"
         )
-
         st.stop()
 
     ticket = detail["ticket"]
+    analysis = detail.get("analysis")
 
-    analysis = detail["analysis"]
+    # --------------------------------------------------------
+    # CASE OVERVIEW
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.markdown(
+        "### 📋 Case Overview"
+    )
 
     left, right = st.columns(2)
-
-    # --------------------------------------------------------
-    # TICKET
-    # --------------------------------------------------------
 
     with left:
 
         st.markdown(
-            f"### {ticket['ticket_id']} — "
+            f"#### {ticket['ticket_id']} — "
             f"{ticket['subject']}"
         )
 
         st.write(
-            f"**Customer:** "
-            f"{ticket['customer_name']}"
-        )
-
-        st.write(
-            ticket["message"]
+            f"**Customer:** {ticket['customer_name']}"
         )
 
         st.write(
@@ -976,71 +969,259 @@ with t4:
             f"**Team:** `{ticket['team']}`"
         )
 
-    # --------------------------------------------------------
-    # AI ASSESSMENT
-    # --------------------------------------------------------
+        st.markdown(
+            "#### Original Customer Issue"
+        )
+
+        st.info(
+            ticket["message"]
+        )
 
     with right:
 
         st.markdown(
-            "### AI Assessment"
+            "#### 🤖 AI Assessment"
         )
 
         if analysis:
 
             st.write(
-                f"**Category:** "
-                f"{analysis['category']}"
+                f"**Category:** {analysis.get('category', 'Unknown')}"
             )
 
             st.write(
-                f"**Severity:** "
-                f"`{analysis['severity']}`"
+                f"**Severity:** `{analysis.get('severity', 'UNKNOWN')}`"
             )
 
             st.write(
-                f"**Sentiment:** "
-                f"{analysis['sentiment']}"
+                f"**Sentiment:** {analysis.get('sentiment', 'Unknown')}"
             )
 
+            try:
+                analysis_confidence = float(
+                    analysis.get("confidence", 0)
+                )
+            except (TypeError, ValueError):
+                analysis_confidence = 0.0
+
             st.write(
-                f"**Confidence:** "
-                f"{analysis['confidence']:.0%}"
+                f"**Confidence:** {analysis_confidence:.0%}"
             )
 
             escalate_text = (
                 "🚨 YES"
-                if analysis["escalate"]
+                if bool(analysis.get("escalate", False))
                 else "✅ NO"
             )
 
             st.write(
-                f"**Escalate:** "
-                f"{escalate_text}"
+                f"**Escalate:** {escalate_text}"
             )
 
             st.write(
                 "**Why:**",
-                analysis[
-                    "escalation_reason"
-                ],
+                analysis.get(
+                    "escalation_reason",
+                    "No escalation reason available.",
+                ),
             )
 
             st.write(
                 "**Recommended:**",
-                analysis[
-                    "recommended_action"
-                ],
+                analysis.get(
+                    "recommended_action",
+                    "No recommendation available.",
+                ),
             )
 
         else:
 
-            st.info(
-                "No AI analysis available."
+            st.warning(
+                "No AI analysis available for this ticket."
             )
 
     # --------------------------------------------------------
-    # ASK AI
+    # AI CUSTOMER RESPONSE
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.markdown(
+        "### 💬 AI Customer Response"
+    )
+
+    if not analysis:
+
+        st.info(
+            "Run AI analysis before generating a customer response."
+        )
+
+    else:
+
+        ai_resolvable = bool(
+            analysis.get(
+                "ai_resolvable",
+                False,
+            )
+        )
+
+        escalate = bool(
+            analysis.get(
+                "escalate",
+                False,
+            )
+        )
+
+        severity = str(
+            analysis.get(
+                "severity",
+                "HIGH",
+            )
+        ).upper()
+
+        try:
+            confidence = float(
+                analysis.get(
+                    "confidence",
+                    0.0,
+                )
+            )
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        if escalate:
+
+            st.warning(
+                "🚨 This ticket requires human review. "
+                "AI will not automatically reply."
+            )
+
+        elif not ai_resolvable:
+
+            st.warning(
+                "⚠️ AI could not safely resolve this ticket "
+                "from the available knowledge."
+            )
+
+        elif severity in {"HIGH", "CRITICAL"}:
+
+            st.warning(
+                "⚠️ High-impact tickets require human review "
+                "before an automatic response."
+            )
+
+        elif confidence < 0.75:
+
+            st.warning(
+                "⚠️ AI confidence is below the automatic reply threshold."
+            )
+
+        else:
+
+            st.caption(
+                "Generate a customer-facing response grounded "
+                "in the support knowledge base."
+            )
+
+            if st.button(
+                "✨ Generate Grounded Reply",
+                type="primary",
+                key=f"generate_reply_{selected}",
+            ):
+
+                with st.spinner(
+                    "Generating grounded customer response..."
+                ):
+
+                    try:
+
+                        reply_response = requests.post(
+                            f"{API}/tickets/"
+                            f"{selected}/reply",
+                            timeout=180,
+                        )
+
+                        if reply_response.ok:
+
+                            reply_result = reply_response.json()
+
+                            if reply_result.get(
+                                "can_reply",
+                                False,
+                            ):
+
+                                st.success(
+                                    "Grounded response generated."
+                                )
+
+                                st.markdown(
+                                    "#### Suggested Customer Reply"
+                                )
+
+                                st.chat_message(
+                                    "assistant"
+                                ).write(
+                                    reply_result.get(
+                                        "reply",
+                                        "",
+                                    )
+                                )
+
+                                sources = reply_result.get(
+                                    "sources",
+                                    [],
+                                )
+
+                                if sources:
+
+                                    st.markdown(
+                                        "#### 📚 Knowledge Sources"
+                                    )
+
+                                    for source in sources:
+
+                                        st.write(
+                                            f"📚 `{source}`"
+                                        )
+
+                                try:
+                                    reply_confidence = float(
+                                        reply_result.get(
+                                            "confidence",
+                                            0,
+                                        )
+                                    )
+                                except (TypeError, ValueError):
+                                    reply_confidence = 0.0
+
+                                st.caption(
+                                    "Reply confidence: "
+                                    f"{reply_confidence:.0%}"
+                                )
+
+                            else:
+
+                                st.warning(
+                                    reply_result.get(
+                                        "reason",
+                                        "AI could not safely generate a response.",
+                                    )
+                                )
+
+                        else:
+
+                            st.error(
+                                reply_response.text
+                            )
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Reply generation failed: {exc}"
+                        )
+
+    # --------------------------------------------------------
+    # ASK AI INVESTIGATOR
     # --------------------------------------------------------
 
     st.divider()
@@ -1051,10 +1232,7 @@ with t4:
 
     question = st.text_input(
         "Ask a question about this case",
-        placeholder=(
-            "Why might this assessment "
-            "have been submitted?"
-        ),
+        placeholder="Why was this ticket escalated?",
         key="investigation_question",
     )
 
@@ -1062,7 +1240,7 @@ with t4:
         "Investigate",
         type="primary",
         key="investigate_button",
-    ) and question:
+    ) and question.strip():
 
         with st.spinner(
             "AI is investigating the case..."
@@ -1074,25 +1252,32 @@ with t4:
                     f"{API}/tickets/"
                     f"{selected}/investigate",
                     json={
-                        "question": question
+                        "question": question.strip()
                     },
                     timeout=180,
                 )
 
                 if investigation_response.ok:
 
-                    result = (
-                        investigation_response
-                        .json()
-                    )
+                    result = investigation_response.json()
 
                     st.success(
                         "Investigation completed."
                     )
 
-                    st.write(
-                        f"**Confidence:** "
-                        f"{result['confidence']:.0%}"
+                    try:
+                        investigation_confidence = float(
+                            result.get(
+                                "confidence",
+                                0,
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        investigation_confidence = 0.0
+
+                    st.metric(
+                        "Investigation Confidence",
+                        f"{investigation_confidence:.0%}",
                     )
 
                     st.markdown(
@@ -1100,19 +1285,23 @@ with t4:
                     )
 
                     st.write(
-                        result["findings"]
+                        result.get(
+                            "findings",
+                            "No findings returned.",
+                        )
                     )
 
                     st.markdown(
                         "#### Evidence"
                     )
 
-                    evidence = (
-                        result.get(
-                            "evidence",
-                            [],
-                        )
+                    evidence = result.get(
+                        "evidence",
+                        [],
                     )
+
+                    if isinstance(evidence, str):
+                        evidence = [evidence]
 
                     if evidence:
 
@@ -1134,9 +1323,10 @@ with t4:
                     )
 
                     st.write(
-                        result[
-                            "recommendation"
-                        ]
+                        result.get(
+                            "recommendation",
+                            "No recommendation returned.",
+                        )
                     )
 
                 else:
@@ -1152,150 +1342,6 @@ with t4:
                 )
 
     # --------------------------------------------------------
-    # HUMAN FEEDBACK
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.subheader(
-        "👤 Human Feedback"
-    )
-
-    st.caption(
-        "Correct the AI assessment when necessary. "
-        "Validated corrections become reusable learning "
-        "examples for future cases."
-    )
-
-    if analysis:
-
-        f1, f2, f3 = st.columns(3)
-
-        available_categories = sorted(
-            set(
-                CATEGORIES
-                + [analysis["category"]]
-            )
-        )
-
-        with f1:
-
-            default_category_index = (
-                available_categories.index(
-                    analysis["category"]
-                )
-                if analysis["category"]
-                in available_categories
-                else 0
-            )
-
-            human_category = st.selectbox(
-                "Correct category",
-                available_categories,
-                index=default_category_index,
-                key=f"feedback_category_{selected}",
-            )
-
-        with f2:
-
-            human_severity = st.selectbox(
-                "Correct severity",
-                SEVERITIES,
-                index=SEVERITIES.index(
-                    analysis["severity"]
-                ),
-                key=f"feedback_severity_{selected}",
-            )
-
-        with f3:
-
-            human_escalate = st.checkbox(
-                "Escalate",
-                value=bool(
-                    analysis["escalate"]
-                ),
-                key=f"feedback_escalate_{selected}",
-            )
-
-        reason = st.text_area(
-            "Why is this correction needed?",
-            placeholder=(
-                "Example: repeated login failures "
-                "plus suspicious device pattern should "
-                "be handled by Security."
-            ),
-            key=f"feedback_reason_{selected}",
-        )
-
-        analyst = st.text_input(
-            "Analyst",
-            value="analyst",
-            key=f"feedback_analyst_{selected}",
-        )
-
-        if st.button(
-            "Submit Feedback",
-            type="secondary",
-            key=f"submit_feedback_{selected}",
-        ):
-
-            payload = {
-                "human_category":
-                    human_category,
-
-                "human_severity":
-                    human_severity,
-
-                "human_escalate":
-                    human_escalate,
-
-                "reason":
-                    reason,
-
-                "analyst":
-                    analyst,
-            }
-
-            with st.spinner(
-                "Recording learning signal..."
-            ):
-
-                try:
-
-                    feedback_response = requests.post(
-                        f"{API}/tickets/"
-                        f"{selected}/feedback",
-                        json=payload,
-                        timeout=20,
-                    )
-
-                    if feedback_response.ok:
-
-                        result = (
-                            feedback_response
-                            .json()
-                        )
-
-                        st.success(
-                            "Feedback stored • "
-                            f"{result['corrections']} "
-                            "field correction(s) • "
-                            "learning example created"
-                        )
-
-                    else:
-
-                        st.error(
-                            feedback_response.text
-                        )
-
-                except Exception as exc:
-
-                    st.error(
-                        f"Could not submit feedback: {exc}"
-                    )
-
-    # --------------------------------------------------------
     # AUDIT TRAIL
     # --------------------------------------------------------
 
@@ -1303,6 +1349,11 @@ with t4:
 
     st.markdown(
         "### 🕒 Audit Trail"
+    )
+
+    st.caption(
+        "Chronological history of AI decisions, knowledge retrieval, "
+        "investigations, human actions, and ticket lifecycle events."
     )
 
     audit_events = detail.get(
@@ -1313,34 +1364,40 @@ with t4:
     if not audit_events:
 
         st.info(
-            "No audit events available."
+            "No audit events available for this ticket."
         )
 
     else:
 
+        st.write(
+            f"Showing **{len(audit_events):,}** audit event(s)"
+        )
+
         for event in audit_events:
 
             with st.expander(
-                f"{event['timestamp']} · "
-                f"{event['event_type']}"
+                f"{event.get('timestamp', '')} · "
+                f"{event.get('event_type', 'UNKNOWN')}"
             ):
 
                 st.write(
                     f"**Actor:** "
-                    f"{event['actor']}"
+                    f"{event.get('actor', 'unknown')}"
                 )
 
                 st.write(
-                    event["description"]
+                    event.get(
+                        "description",
+                        "",
+                    )
                 )
 
-                if event.get(
-                    "metadata"
-                ):
+                if event.get("metadata"):
 
                     st.json(
                         event["metadata"]
                     )
+
 
 
 # ============================================================
@@ -1358,6 +1415,179 @@ with t5:
         "learning memory. Similar examples are retrieved "
         "when processing future tickets."
     )
+
+    # --------------------------------------------------------
+    # HUMAN FEEDBACK
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "👤 Human Feedback"
+    )
+
+    st.caption(
+        "Review and correct AI decisions. Validated corrections "
+        "become reusable learning examples for future tickets."
+    )
+
+    feedback_ticket = st.selectbox(
+        "Select a ticket to review",
+        df.ticket_id.tolist(),
+        key="feedback_ticket",
+    )
+
+    try:
+        feedback_detail_response = requests.get(
+            f"{API}/tickets/{feedback_ticket}",
+            timeout=10,
+        )
+
+        feedback_detail_response.raise_for_status()
+
+        feedback_detail = feedback_detail_response.json()
+
+        feedback_analysis = feedback_detail.get(
+            "analysis"
+        )
+
+    except Exception as exc:
+        st.error(
+            f"Could not load ticket for feedback: {exc}"
+        )
+        feedback_analysis = None
+
+    if feedback_analysis:
+
+        st.markdown(
+            f"**Ticket:** `{feedback_ticket}`"
+        )
+
+        f1, f2, f3 = st.columns(3)
+
+        available_categories = sorted(
+            set(
+                CATEGORIES
+                + [feedback_analysis["category"]]
+            )
+        )
+
+        with f1:
+
+            default_category_index = (
+                available_categories.index(
+                    feedback_analysis["category"]
+                )
+                if feedback_analysis["category"]
+                in available_categories
+                else 0
+            )
+
+            human_category = st.selectbox(
+                "Correct category",
+                available_categories,
+                index=default_category_index,
+                key=f"feedback_category_{feedback_ticket}",
+            )
+
+        with f2:
+
+            current_severity = feedback_analysis.get(
+                "severity",
+                "MEDIUM",
+            )
+
+            severity_index = (
+                SEVERITIES.index(current_severity)
+                if current_severity in SEVERITIES
+                else 0
+            )
+
+            human_severity = st.selectbox(
+                "Correct severity",
+                SEVERITIES,
+                index=severity_index,
+                key=f"feedback_severity_{feedback_ticket}",
+            )
+
+        with f3:
+
+            human_escalate = st.checkbox(
+                "Escalate",
+                value=bool(
+                    feedback_analysis.get(
+                        "escalate",
+                        False,
+                    )
+                ),
+                key=f"feedback_escalate_{feedback_ticket}",
+            )
+
+        reason = st.text_area(
+            "Why is this correction needed?",
+            placeholder=(
+                "Explain why the AI decision should be corrected."
+            ),
+            key=f"feedback_reason_{feedback_ticket}",
+        )
+
+        analyst = st.text_input(
+            "Analyst",
+            value="analyst",
+            key=f"feedback_analyst_{feedback_ticket}",
+        )
+
+        if st.button(
+            "Submit Feedback",
+            type="primary",
+            key=f"submit_feedback_{feedback_ticket}",
+        ):
+
+            payload = {
+                "human_category": human_category,
+                "human_severity": human_severity,
+                "human_escalate": human_escalate,
+                "reason": reason,
+                "analyst": analyst,
+            }
+
+            with st.spinner(
+                "Recording learning signal..."
+            ):
+
+                try:
+
+                    feedback_response = requests.post(
+                        f"{API}/tickets/"
+                        f"{feedback_ticket}/feedback",
+                        json=payload,
+                        timeout=20,
+                    )
+
+                    if feedback_response.ok:
+
+                        result = feedback_response.json()
+
+                        st.success(
+                            "Feedback stored • "
+                            f"{result['corrections']} "
+                            "field correction(s) • "
+                            "learning example created"
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            feedback_response.text
+                        )
+
+                except Exception as exc:
+
+                    st.error(
+                        f"Could not submit feedback: {exc}"
+                    )
 
     # --------------------------------------------------------
     # LOAD LEARNING STATS

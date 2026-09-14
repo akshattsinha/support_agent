@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List
 
 from app.models import Ticket, FeedbackRequest
 from app.agent import process_ticket, investigate
+from app.reply import generate_grounded_reply
 
 from app.db import (
     SessionLocal,
@@ -21,7 +23,7 @@ from app.learning import (
 
 app = FastAPI(
     title="AI Support Sentinel",
-    version="2.2",
+    version="3.0",
 )
 
 
@@ -34,31 +36,96 @@ class SupportMessageRequest(BaseModel):
     agent: str = "support_agent"
 
 
+class BatchTicketRequest(BaseModel):
+    tickets: List[Ticket]
+
+
 # ============================================================
 # HEALTH
 # ============================================================
 
 @app.get("/health")
 def health():
+
     return {
-        "status": "ok"
+        "status": "ok",
+        "service": "AI Support Sentinel",
     }
 
 
 # ============================================================
-# PROCESS TICKET
+# PROCESS ONE TICKET
 # ============================================================
 
 @app.post("/tickets/process")
 def process(t: Ticket):
+
     try:
+
         return process_ticket(t)
 
     except Exception as e:
+
         raise HTTPException(
             status_code=500,
             detail=str(e),
         )
+
+
+# ============================================================
+# PROCESS TICKET BATCH
+# ============================================================
+
+@app.post("/tickets/process-batch")
+def process_batch(body: BatchTicketRequest):
+
+    if not body.tickets:
+
+        raise HTTPException(
+            status_code=400,
+            detail="At least one ticket is required.",
+        )
+
+    results = []
+
+    for ticket in body.tickets:
+
+        try:
+
+            result = process_ticket(ticket)
+
+            results.append(
+                {
+                    "ticket_id": ticket.ticket_id,
+                    "success": True,
+                    "result": result,
+                }
+            )
+
+        except Exception as e:
+
+            results.append(
+                {
+                    "ticket_id": ticket.ticket_id,
+                    "success": False,
+                    "error": str(e),
+                }
+            )
+
+    successful = sum(
+        1
+        for item in results
+        if item["success"]
+    )
+
+    failed = len(results) - successful
+
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "results": results,
+    }
 
 
 # ============================================================
@@ -97,9 +164,8 @@ def tickets():
 
 # ============================================================
 # HUMAN ESCALATION QUEUE
-#
 # IMPORTANT:
-# This MUST appear before /tickets/{ticket_id}
+# THIS MUST COME BEFORE /tickets/{ticket_id}
 # ============================================================
 
 @app.get("/tickets/escalated")
@@ -118,7 +184,7 @@ def escalated_tickets():
                 )
             )
             .order_by(
-                TicketRow.created_at.desc()
+                TicketRow.created_at.asc()
             )
             .all()
         )
@@ -141,7 +207,7 @@ def escalated_tickets():
 
 
 # ============================================================
-# TICKET DETAILS
+# TICKET DETAIL
 # ============================================================
 
 @app.get("/tickets/{ticket_id}")
@@ -158,6 +224,7 @@ def get_ticket(ticket_id: str):
         )
 
         if not ticket:
+
             raise HTTPException(
                 status_code=404,
                 detail="Ticket not found",
@@ -187,247 +254,216 @@ def get_ticket(ticket_id: str):
 
         return {
             "ticket": {
-                "ticket_id": ticket.ticket_id,
-                "customer_name": ticket.customer_name,
-                "subject": ticket.subject,
-                "message": ticket.message,
-                "category": ticket.category,
-                "severity": ticket.severity,
-                "confidence": ticket.confidence,
-                "status": ticket.status,
-                "team": ticket.team,
-                "created_at": ticket.created_at,
+                c: getattr(
+                    ticket,
+                    c,
+                )
+                for c in [
+                    "ticket_id",
+                    "customer_name",
+                    "subject",
+                    "message",
+                    "category",
+                    "severity",
+                    "confidence",
+                    "status",
+                    "team",
+                    "created_at",
+                ]
             },
-
             "analysis": (
                 analysis.data
                 if analysis
                 else None
             ),
-
             "audit": [
                 {
-                    "event_type": e.event_type,
-                    "actor": e.actor,
-                    "description": e.description,
-                    "metadata": e.metadata_json,
-                    "timestamp": e.timestamp,
+                    "event_type":
+                        event.event_type,
+
+                    "actor":
+                        event.actor,
+
+                    "description":
+                        event.description,
+
+                    "metadata":
+                        event.metadata_json,
+
+                    "timestamp":
+                        event.timestamp,
                 }
-                for e in events
+                for event in events
             ],
         }
 
 
 # ============================================================
-# GET SUPPORT CHAT
+# GENERATE GROUNDED AI REPLY
 # ============================================================
 
-@app.get("/tickets/{ticket_id}/messages")
-def get_support_messages(ticket_id: str):
+@app.post("/tickets/{ticket_id}/reply")
+def generate_reply(ticket_id: str):
 
-    with SessionLocal() as db:
+    try:
 
-        ticket = (
-            db.query(TicketRow)
-            .filter_by(
-                ticket_id=ticket_id
-            )
-            .first()
-        )
+        with SessionLocal() as db:
 
-        if not ticket:
-            raise HTTPException(
-                status_code=404,
-                detail="Ticket not found",
+            ticket = (
+                db.query(TicketRow)
+                .filter_by(
+                    ticket_id=ticket_id
+                )
+                .first()
             )
 
-        rows = (
-            db.query(SupportMessageRow)
-            .filter_by(
-                ticket_id=ticket_id
+            if not ticket:
+
+                raise HTTPException(
+                    status_code=404,
+                    detail="Ticket not found",
+                )
+
+            analysis_row = (
+                db.query(AnalysisRow)
+                .filter_by(
+                    ticket_id=ticket_id
+                )
+                .order_by(
+                    AnalysisRow.created_at.desc()
+                )
+                .first()
             )
-            .order_by(
-                SupportMessageRow.created_at.asc()
+
+            if not analysis_row:
+
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "This ticket has not been "
+                        "analyzed yet. Process the "
+                        "ticket first."
+                    ),
+                )
+
+            analysis = dict(
+                analysis_row.data
             )
-            .all()
-        )
 
-        messages = [
-            {
-                "id": row.id,
-                "ticket_id": row.ticket_id,
-                "sender": row.sender,
-                "message": row.message,
-                "created_at": row.created_at,
-            }
-            for row in rows
-        ]
+            # ------------------------------------------------
+            # DO NOT AUTO-REPLY TO ESCALATED CASES
+            # ------------------------------------------------
 
-        # Show the original ticket as the
-        # first customer message.
-        if not messages:
+            if (
+                ticket.status
+                in [
+                    "ESCALATED",
+                    "HUMAN_ACTIVE",
+                    "DONE",
+                ]
+            ):
 
-            messages.append(
-                {
-                    "id": 0,
-                    "ticket_id": ticket.ticket_id,
-                    "sender": "customer",
-                    "message": ticket.message,
-                    "created_at": ticket.created_at,
+                return {
+                    "can_reply": False,
+                    "reply": "",
+                    "sources": [],
+                    "reason": (
+                        "This ticket is currently "
+                        "handled through the human "
+                        "support workflow."
+                    ),
+                    "confidence": float(
+                        analysis.get(
+                            "confidence",
+                            0.0,
+                        )
+                    ),
                 }
+
+            result = generate_grounded_reply(
+                ticket,
+                analysis,
             )
 
-        return messages
+            # ------------------------------------------------
+            # STORE REPLY IN ANALYSIS
+            # ------------------------------------------------
 
+            if result["can_reply"]:
 
-# ============================================================
-# SEND SUPPORT MESSAGE
-# ============================================================
+                updated_analysis = dict(
+                    analysis
+                )
 
-@app.post("/tickets/{ticket_id}/messages")
-def send_support_message(
-    ticket_id: str,
-    body: SupportMessageRequest,
-):
+                updated_analysis[
+                    "generated_reply"
+                ] = result["reply"]
 
-    message = body.message.strip()
+                updated_analysis[
+                    "reply_sources"
+                ] = result["sources"]
 
-    if not message:
+                updated_analysis[
+                    "reply_confidence"
+                ] = result["confidence"]
+
+                updated_analysis[
+                    "reply_status"
+                ] = "GENERATED"
+
+                analysis_row.data = (
+                    updated_analysis
+                )
+
+                db.commit()
+
+                # --------------------------------------------
+                # AUDIT
+                # --------------------------------------------
+
+                db.add(
+                    AuditRow(
+                        ticket_id=ticket_id,
+                        event_type="AI_REPLY_GENERATED",
+                        actor="ai",
+                        description=(
+                            "Generated a grounded "
+                            "customer response using "
+                            "retrieved knowledge."
+                        ),
+                        metadata_json={
+                            "sources":
+                                result["sources"],
+
+                            "confidence":
+                                result[
+                                    "confidence"
+                                ],
+                        },
+                    )
+                )
+
+                db.commit()
+
+            return result
+
+    except HTTPException:
+
+        raise
+
+    except Exception as e:
+
         raise HTTPException(
-            status_code=400,
-            detail="Message cannot be empty.",
+            status_code=500,
+            detail=(
+                "AI reply generation failed: "
+                f"{type(e).__name__}: {e}"
+            ),
         )
-
-    agent = (
-        body.agent.strip()
-        or "support_agent"
-    )
-
-    with SessionLocal() as db:
-
-        ticket = (
-            db.query(TicketRow)
-            .filter_by(
-                ticket_id=ticket_id
-            )
-            .first()
-        )
-
-        if not ticket:
-            raise HTTPException(
-                status_code=404,
-                detail="Ticket not found",
-            )
-
-        if ticket.status == "DONE":
-            raise HTTPException(
-                status_code=400,
-                detail="This ticket has already been closed.",
-            )
-
-        # First human response means the agent
-        # has taken ownership of the ticket.
-        if ticket.status == "ESCALATED":
-            ticket.status = "HUMAN_ACTIVE"
-
-        support_message = SupportMessageRow(
-            ticket_id=ticket_id,
-            sender=agent,
-            message=message,
-        )
-
-        db.add(
-            support_message
-        )
-
-        db.add(
-            AuditRow(
-                ticket_id=ticket_id,
-                event_type="HUMAN_SUPPORT_MESSAGE",
-                actor=agent,
-                description=(
-                    "Human support agent sent "
-                    "a response to the customer."
-                ),
-                metadata_json={
-                    "message": message,
-                },
-            )
-        )
-
-        db.commit()
-
-        db.refresh(
-            support_message
-        )
-
-        return {
-            "id": support_message.id,
-            "ticket_id": support_message.ticket_id,
-            "sender": support_message.sender,
-            "message": support_message.message,
-            "created_at": support_message.created_at,
-            "status": ticket.status,
-        }
 
 
 # ============================================================
-# CLOSE TICKET
-# ============================================================
-
-@app.post("/tickets/{ticket_id}/close")
-def close_ticket(ticket_id: str):
-
-    with SessionLocal() as db:
-
-        ticket = (
-            db.query(TicketRow)
-            .filter_by(
-                ticket_id=ticket_id
-            )
-            .first()
-        )
-
-        if not ticket:
-            raise HTTPException(
-                status_code=404,
-                detail="Ticket not found",
-            )
-
-        if ticket.status == "DONE":
-
-            return {
-                "ticket_id": ticket_id,
-                "status": "DONE",
-                "message": "Ticket is already closed.",
-            }
-
-        ticket.status = "DONE"
-
-        db.add(
-            AuditRow(
-                ticket_id=ticket_id,
-                event_type="TICKET_CLOSED",
-                actor="support_agent",
-                description=(
-                    "Ticket resolved and closed "
-                    "by human support agent."
-                ),
-                metadata_json={},
-            )
-        )
-
-        db.commit()
-
-        return {
-            "ticket_id": ticket_id,
-            "status": "DONE",
-            "message": "Ticket marked as done.",
-        }
-
-
-# ============================================================
-# AI INVESTIGATION
+# INVESTIGATION
 # ============================================================
 
 @app.post("/tickets/{ticket_id}/investigate")
@@ -439,14 +475,16 @@ def inv(
     try:
 
         question = (
-            body.get(
+            body
+            .get(
                 "question",
-                ""
+                "",
             )
             .strip()
         )
 
         if not question:
+
             raise ValueError(
                 "Question is required."
             )
@@ -481,11 +519,20 @@ def feedback(
 
         return submit_feedback(
             ticket_id=ticket_id,
-            human_category=body.human_category,
-            human_severity=body.human_severity.value,
-            human_escalate=body.human_escalate,
-            reason=body.reason,
-            analyst=body.analyst,
+            human_category=
+                body.human_category,
+
+            human_severity=
+                body.human_severity.value,
+
+            human_escalate=
+                body.human_escalate,
+
+            reason=
+                body.reason,
+
+            analyst=
+                body.analyst,
         )
 
     except ValueError as e:
@@ -504,7 +551,235 @@ def feedback(
 
 
 # ============================================================
-# LEARNING STATS
+# SUPPORT CHAT
+# ============================================================
+
+@app.get(
+    "/tickets/{ticket_id}/messages"
+)
+def get_messages(ticket_id: str):
+
+    with SessionLocal() as db:
+
+        ticket = (
+            db.query(TicketRow)
+            .filter_by(
+                ticket_id=ticket_id
+            )
+            .first()
+        )
+
+        if not ticket:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Ticket not found",
+            )
+
+        stored_messages = (
+            db.query(
+                SupportMessageRow
+            )
+            .filter_by(
+                ticket_id=ticket_id
+            )
+            .order_by(
+                SupportMessageRow.created_at.asc()
+            )
+            .all()
+        )
+
+        # ----------------------------------------------------
+        # ALWAYS PRESERVE ORIGINAL CUSTOMER MESSAGE
+        # ----------------------------------------------------
+
+        messages = [
+            {
+                "id": 0,
+                "sender": "customer",
+                "message": ticket.message,
+                "created_at": ticket.created_at,
+            }
+        ]
+
+        messages.extend(
+            [
+                {
+                    "id": message.id,
+                    "sender": message.sender,
+                    "message": message.message,
+                    "created_at":
+                        message.created_at,
+                }
+                for message
+                in stored_messages
+            ]
+        )
+
+        return messages
+
+
+# ============================================================
+# SEND SUPPORT MESSAGE
+# ============================================================
+
+@app.post(
+    "/tickets/{ticket_id}/messages"
+)
+def send_message(
+    ticket_id: str,
+    body: SupportMessageRequest,
+):
+
+    message = body.message.strip()
+
+    if not message:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Message cannot be empty.",
+        )
+
+    with SessionLocal() as db:
+
+        ticket = (
+            db.query(TicketRow)
+            .filter_by(
+                ticket_id=ticket_id
+            )
+            .first()
+        )
+
+        if not ticket:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Ticket not found",
+            )
+
+        if ticket.status == "DONE":
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This ticket is already closed."
+                ),
+            )
+
+        if ticket.status == "ESCALATED":
+
+            ticket.status = "HUMAN_ACTIVE"
+
+        support_message = (
+            SupportMessageRow(
+                ticket_id=ticket_id,
+                sender=(
+                    body.agent.strip()
+                    or "support_agent"
+                ),
+                message=message,
+            )
+        )
+
+        db.add(
+            support_message
+        )
+
+        db.flush()
+
+        db.add(
+            AuditRow(
+                ticket_id=ticket_id,
+                event_type="HUMAN_SUPPORT_MESSAGE",
+                actor=(
+                    body.agent.strip()
+                    or "support_agent"
+                ),
+                description=(
+                    "Support agent sent a "
+                    "message to the customer."
+                ),
+                metadata_json={
+                    "message_id":
+                        support_message.id,
+                },
+            )
+        )
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message_id":
+                support_message.id,
+            "status":
+                ticket.status,
+        }
+
+
+# ============================================================
+# CLOSE TICKET
+# ============================================================
+
+@app.post(
+    "/tickets/{ticket_id}/close"
+)
+def close_ticket(ticket_id: str):
+
+    with SessionLocal() as db:
+
+        ticket = (
+            db.query(TicketRow)
+            .filter_by(
+                ticket_id=ticket_id
+            )
+            .first()
+        )
+
+        if not ticket:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Ticket not found",
+            )
+
+        if ticket.status == "DONE":
+
+            return {
+                "success": True,
+                "status": "DONE",
+                "message": (
+                    "Ticket was already closed."
+                ),
+            }
+
+        ticket.status = "DONE"
+
+        db.add(
+            AuditRow(
+                ticket_id=ticket_id,
+                event_type="TICKET_CLOSED",
+                actor="support_agent",
+                description=(
+                    "Support agent marked the "
+                    "ticket as resolved."
+                ),
+                metadata_json={
+                    "final_status": "DONE",
+                },
+            )
+        )
+
+        db.commit()
+
+        return {
+            "success": True,
+            "status": "DONE",
+        }
+
+
+# ============================================================
+# CONTINUAL LEARNING
 # ============================================================
 
 @app.get("/learning/stats")
@@ -512,10 +787,6 @@ def learning_stats():
 
     return get_learning_stats()
 
-
-# ============================================================
-# LEARNING RUN
-# ============================================================
 
 @app.post("/learning/run")
 def learning_run():
