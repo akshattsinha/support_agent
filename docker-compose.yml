@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports: ["8001:8001"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: llama3.1:8b
+      DATABASE_URL: sqlite:///./support_agent.db
+      KNOWLEDGE_BASE_DIR: ./knowledge_base
+    volumes: [".:/app"]
+  dashboard:
+    build: .
+    ports: ["8503:8503"]
+    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.port=8503
+    volumes: [".:/app"]
+    depends_on: [api]

@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+streamlit
+requests
+httpx
+pydantic
+pydantic-settings
+sqlalchemy
+pandas
+plotly
